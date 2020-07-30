@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/terraform/addrs"
 	"github.com/hashicorp/terraform/configs/configschema"
+	"github.com/hashicorp/terraform/helper/diff"
 	"github.com/hashicorp/terraform/plans"
 	"github.com/hashicorp/terraform/plans/objchange"
 	"github.com/hashicorp/terraform/states"
@@ -92,41 +93,44 @@ func ResourceChange(
 
 	buf.WriteString(" {")
 
-	p := blockBodyDiffPrinter{
-		buf:             &buf,
-		color:           color,
-		action:          change.Action,
-		requiredReplace: change.RequiredReplace,
+	if diff.CurrentDiffLevel() == diff.AllLevel {
+		p := blockBodyDiffPrinter{
+			buf:             &buf,
+			color:           color,
+			action:          change.Action,
+			requiredReplace: change.RequiredReplace,
+		}
+
+		// Most commonly-used resources have nested blocks that result in us
+		// going at least three traversals deep while we recurse here, so we'll
+		// start with that much capacity and then grow as needed for deeper
+		// structures.
+		path := make(cty.Path, 0, 3)
+
+		changeV, err := change.Decode(schema.ImpliedType())
+		if err != nil {
+			// Should never happen in here, since we've already been through
+			// loads of layers of encode/decode of the planned changes before now.
+			panic(fmt.Sprintf("failed to decode plan for %s while rendering diff: %s", addr, err))
+		}
+
+		// We currently have an opt-out that permits the legacy SDK to return values
+		// that defy our usual conventions around handling of nesting blocks. To
+		// avoid the rendering code from needing to handle all of these, we'll
+		// normalize first.
+		// (Ideally we'd do this as part of the SDK opt-out implementation in core,
+		// but we've added it here for now to reduce risk of unexpected impacts
+		// on other code in core.)
+		changeV.Change.Before = objchange.NormalizeObjectFromLegacySDK(changeV.Change.Before, schema)
+		changeV.Change.After = objchange.NormalizeObjectFromLegacySDK(changeV.Change.After, schema)
+
+		bodyWritten := p.writeBlockBodyDiff(schema, changeV.Before, changeV.After, 6, path)
+		if bodyWritten {
+			buf.WriteString("\n")
+			buf.WriteString(strings.Repeat(" ", 4))
+		}
 	}
 
-	// Most commonly-used resources have nested blocks that result in us
-	// going at least three traversals deep while we recurse here, so we'll
-	// start with that much capacity and then grow as needed for deeper
-	// structures.
-	path := make(cty.Path, 0, 3)
-
-	changeV, err := change.Decode(schema.ImpliedType())
-	if err != nil {
-		// Should never happen in here, since we've already been through
-		// loads of layers of encode/decode of the planned changes before now.
-		panic(fmt.Sprintf("failed to decode plan for %s while rendering diff: %s", addr, err))
-	}
-
-	// We currently have an opt-out that permits the legacy SDK to return values
-	// that defy our usual conventions around handling of nesting blocks. To
-	// avoid the rendering code from needing to handle all of these, we'll
-	// normalize first.
-	// (Ideally we'd do this as part of the SDK opt-out implementation in core,
-	// but we've added it here for now to reduce risk of unexpected impacts
-	// on other code in core.)
-	changeV.Change.Before = objchange.NormalizeObjectFromLegacySDK(changeV.Change.Before, schema)
-	changeV.Change.After = objchange.NormalizeObjectFromLegacySDK(changeV.Change.After, schema)
-
-	bodyWritten := p.writeBlockBodyDiff(schema, changeV.Before, changeV.After, 6, path)
-	if bodyWritten {
-		buf.WriteString("\n")
-		buf.WriteString(strings.Repeat(" ", 4))
-	}
 	buf.WriteString("}\n")
 
 	return buf.String()
