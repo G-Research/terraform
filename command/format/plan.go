@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform/config"
+	"github.com/hashicorp/terraform/helper/diff"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/colorstring"
 )
@@ -296,51 +297,53 @@ func formatPlanInstanceDiff(buf *bytes.Buffer, r *InstanceDiff, keyLen int, colo
 		)),
 	)
 
-	for _, attr := range r.Attributes {
+	if diff.CurrentDiffLevel() == diff.AllLevel {
+		for _, attr := range r.Attributes {
 
-		v := attr.NewValue
-		var dispV string
-		switch {
-		case v == "" && attr.NewComputed:
-			dispV = "<computed>"
-		case attr.Sensitive:
-			dispV = "<sensitive>"
-		default:
-			dispV = fmt.Sprintf("%q", v)
-		}
-
-		updateMsg := ""
-		switch {
-		case attr.ForcesNew && r.Action == terraform.DiffDestroyCreate:
-			updateMsg = colorizer.Color(" [red](forces new resource)")
-		case attr.Sensitive && oldValues:
-			updateMsg = colorizer.Color(" [yellow](attribute changed)")
-		}
-
-		if oldValues {
-			u := attr.OldValue
-			var dispU string
+			v := attr.NewValue
+			var dispV string
 			switch {
+			case v == "" && attr.NewComputed:
+				dispV = "<computed>"
 			case attr.Sensitive:
-				dispU = "<sensitive>"
+				dispV = "<sensitive>"
 			default:
-				dispU = fmt.Sprintf("%q", u)
+				dispV = fmt.Sprintf("%q", v)
 			}
-			buf.WriteString(fmt.Sprintf(
-				"      %s:%s %s => %s%s\n",
-				attr.Path,
-				strings.Repeat(" ", keyLen-len(attr.Path)),
-				dispU, dispV,
-				updateMsg,
-			))
-		} else {
-			buf.WriteString(fmt.Sprintf(
-				"      %s:%s %s%s\n",
-				attr.Path,
-				strings.Repeat(" ", keyLen-len(attr.Path)),
-				dispV,
-				updateMsg,
-			))
+
+			updateMsg := ""
+			switch {
+			case attr.ForcesNew && r.Action == terraform.DiffDestroyCreate:
+				updateMsg = colorizer.Color(" [red](forces new resource)")
+			case attr.Sensitive && oldValues:
+				updateMsg = colorizer.Color(" [yellow](attribute changed)")
+			}
+
+			if oldValues {
+				u := attr.OldValue
+				var dispU string
+				switch {
+				case attr.Sensitive:
+					dispU = "<sensitive>"
+				default:
+					dispU = fmt.Sprintf("%q", u)
+				}
+				buf.WriteString(fmt.Sprintf(
+					"      %s:%s %s => %s%s\n",
+					attr.Path,
+					strings.Repeat(" ", keyLen-len(attr.Path)),
+					dispU, dispV,
+					updateMsg,
+				))
+			} else {
+				buf.WriteString(fmt.Sprintf(
+					"      %s:%s %s%s\n",
+					attr.Path,
+					strings.Repeat(" ", keyLen-len(attr.Path)),
+					dispV,
+					updateMsg,
+				))
+			}
 		}
 	}
 

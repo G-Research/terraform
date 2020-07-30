@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hashicorp/terraform/helper/diff"
 	"github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/cli"
 	"github.com/mitchellh/colorstring"
@@ -107,27 +108,29 @@ func (h *UiHook) PreApply(
 	}
 	sort.Strings(keys)
 
-	// Go through and output each attribute
-	for _, attrK := range keys {
-		attrDiff, _ := d.GetAttribute(attrK)
+	if diff.CurrentDiffLevel() == diff.AllLevel {
+		// Go through and output each attribute
+		for _, attrK := range keys {
+			attrDiff, _ := d.GetAttribute(attrK)
 
-		v := attrDiff.New
-		u := attrDiff.Old
-		if attrDiff.NewComputed {
-			v = "<computed>"
+			v := attrDiff.New
+			u := attrDiff.Old
+			if attrDiff.NewComputed {
+				v = "<computed>"
+			}
+
+			if attrDiff.Sensitive {
+				u = "<sensitive>"
+				v = "<sensitive>"
+			}
+
+			attrBuf.WriteString(fmt.Sprintf(
+				"  %s:%s %#v => %#v\n",
+				attrK,
+				strings.Repeat(" ", keyLen-len(attrK)),
+				u,
+				v))
 		}
-
-		if attrDiff.Sensitive {
-			u = "<sensitive>"
-			v = "<sensitive>"
-		}
-
-		attrBuf.WriteString(fmt.Sprintf(
-			"  %s:%s %#v => %#v\n",
-			attrK,
-			strings.Repeat(" ", keyLen-len(attrK)),
-			u,
-			v))
 	}
 
 	attrString := strings.TrimSpace(attrBuf.String())
