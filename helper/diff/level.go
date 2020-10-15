@@ -13,12 +13,13 @@ const EnvDiff = "TF_DIFF"
 
 // These are the supported diff levels.
 const (
-	AllLevel  = DiffLevel("ALL")
-	RootLevel = DiffLevel("ROOT")
+	AllLevel        = DiffLevel("ALL")
+	HideValuesLevel = DiffLevel("HIDE_VALUES")
+	RootLevel       = DiffLevel("ROOT")
 )
 
 // ValidLevels is the list of supported diff levels.
-var ValidLevels = []DiffLevel{AllLevel, RootLevel}
+var ValidLevels = []DiffLevel{AllLevel, HideValuesLevel, RootLevel}
 
 var level DiffLevel
 
