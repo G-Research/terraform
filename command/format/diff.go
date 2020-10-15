@@ -94,7 +94,7 @@ func ResourceChange(
 
 	buf.WriteString(" {")
 
-	if diff.CurrentDiffLevel() == diff.AllLevel {
+	if diff.CurrentDiffLevel() != diff.RootLevel {
 		p := blockBodyDiffPrinter{
 			buf:             &buf,
 			color:           color,
@@ -535,60 +535,65 @@ func (p *blockBodyDiffPrinter) writeValue(val cty.Value, action plans.Action, in
 
 	switch {
 	case ty.IsPrimitiveType():
-		switch ty {
-		case cty.String:
-			{
-				// Special behavior for JSON strings containing array or object
-				src := []byte(val.AsString())
-				ty, err := ctyjson.ImpliedType(src)
-				// check for the special case of "null", which decodes to nil,
-				// and just allow it to be printed out directly
-				if err == nil && !ty.IsPrimitiveType() && strings.TrimSpace(val.AsString()) != "null" {
-					jv, err := ctyjson.Unmarshal(src, ty)
-					if err == nil {
-						p.buf.WriteString("jsonencode(")
-						if jv.LengthInt() == 0 {
-							p.writeValue(jv, action, 0)
-						} else {
-							p.buf.WriteByte('\n')
-							p.buf.WriteString(strings.Repeat(" ", indent+4))
-							p.writeValue(jv, action, indent+4)
-							p.buf.WriteByte('\n')
-							p.buf.WriteString(strings.Repeat(" ", indent))
+		switch diff.CurrentDiffLevel() {
+		case diff.HideValuesLevel:
+			p.buf.WriteString("(hidden)")
+		default:
+			switch ty {
+			case cty.String:
+				{
+					// Special behavior for JSON strings containing array or object
+					src := []byte(val.AsString())
+					ty, err := ctyjson.ImpliedType(src)
+					// check for the special case of "null", which decodes to nil,
+					// and just allow it to be printed out directly
+					if err == nil && !ty.IsPrimitiveType() && strings.TrimSpace(val.AsString()) != "null" {
+						jv, err := ctyjson.Unmarshal(src, ty)
+						if err == nil {
+							p.buf.WriteString("jsonencode(")
+							if jv.LengthInt() == 0 {
+								p.writeValue(jv, action, 0)
+							} else {
+								p.buf.WriteByte('\n')
+								p.buf.WriteString(strings.Repeat(" ", indent+4))
+								p.writeValue(jv, action, indent+4)
+								p.buf.WriteByte('\n')
+								p.buf.WriteString(strings.Repeat(" ", indent))
+							}
+							p.buf.WriteByte(')')
+							break // don't *also* do the normal behavior below
 						}
-						p.buf.WriteByte(')')
-						break // don't *also* do the normal behavior below
 					}
 				}
-			}
 
-			if strings.Contains(val.AsString(), "\n") {
-				// It's a multi-line string, so we want to use the multi-line
-				// rendering so it'll be readable. Rather than re-implement
-				// that here, we'll just re-use the multi-line string diff
-				// printer with no changes, which ends up producing the
-				// result we want here.
-				// The path argument is nil because we don't track path
-				// information into strings and we know that a string can't
-				// have any indices or attributes that might need to be marked
-				// as (requires replacement), which is what that argument is for.
-				p.writeValueDiff(val, val, indent, nil)
-				break
-			}
+				if strings.Contains(val.AsString(), "\n") {
+					// It's a multi-line string, so we want to use the multi-line
+					// rendering so it'll be readable. Rather than re-implement
+					// that here, we'll just re-use the multi-line string diff
+					// printer with no changes, which ends up producing the
+					// result we want here.
+					// The path argument is nil because we don't track path
+					// information into strings and we know that a string can't
+					// have any indices or attributes that might need to be marked
+					// as (requires replacement), which is what that argument is for.
+					p.writeValueDiff(val, val, indent, nil)
+					break
+				}
 
-			fmt.Fprintf(p.buf, "%q", val.AsString())
-		case cty.Bool:
-			if val.True() {
-				p.buf.WriteString("true")
-			} else {
-				p.buf.WriteString("false")
+				fmt.Fprintf(p.buf, "%q", val.AsString())
+			case cty.Bool:
+				if val.True() {
+					p.buf.WriteString("true")
+				} else {
+					p.buf.WriteString("false")
+				}
+			case cty.Number:
+				bf := val.AsBigFloat()
+				p.buf.WriteString(bf.Text('f', -1))
+			default:
+				// should never happen, since the above is exhaustive
+				fmt.Fprintf(p.buf, "%#v", val)
 			}
-		case cty.Number:
-			bf := val.AsBigFloat()
-			p.buf.WriteString(bf.Text('f', -1))
-		default:
-			// should never happen, since the above is exhaustive
-			fmt.Fprintf(p.buf, "%#v", val)
 		}
 	case ty.IsListType() || ty.IsSetType() || ty.IsTupleType():
 		p.buf.WriteString("[")
@@ -626,7 +631,7 @@ func (p *blockBodyDiffPrinter) writeValue(val cty.Value, action plans.Action, in
 			p.buf.WriteString("\n")
 			p.buf.WriteString(strings.Repeat(" ", indent+2))
 			p.writeActionSymbol(action)
-			p.writeValue(key, action, indent+4)
+			p.buf.WriteString(key.AsString())
 			p.buf.WriteString(strings.Repeat(" ", keyLen-len(key.AsString())))
 			p.buf.WriteString(" = ")
 			p.writeValue(val, action, indent+4)
@@ -930,7 +935,7 @@ func (p *blockBodyDiffPrinter) writeValueDiff(old, new cty.Value, indent int, pa
 				path := append(path, cty.IndexStep{Key: kV})
 
 				p.writeActionSymbol(action)
-				p.writeValue(kV, action, indent+4)
+				p.buf.WriteString(k)
 				p.buf.WriteString(strings.Repeat(" ", keyLen-len(k)))
 				p.buf.WriteString(" = ")
 				switch action {
