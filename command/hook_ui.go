@@ -108,13 +108,18 @@ func (h *UiHook) PreApply(
 	}
 	sort.Strings(keys)
 
-	if diff.CurrentDiffLevel() == diff.AllLevel {
+	if diff.CurrentDiffLevel() != diff.RootLevel {
 		// Go through and output each attribute
 		for _, attrK := range keys {
 			attrDiff, _ := d.GetAttribute(attrK)
 
 			v := attrDiff.New
 			u := attrDiff.Old
+			if diff.CurrentDiffLevel() == diff.HideValuesLevel {
+				u = "<hidden>"
+				v = "<hidden>"
+			}
+
 			if attrDiff.NewComputed {
 				v = "<computed>"
 			}
