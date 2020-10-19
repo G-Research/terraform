@@ -297,7 +297,7 @@ func formatPlanInstanceDiff(buf *bytes.Buffer, r *InstanceDiff, keyLen int, colo
 		)),
 	)
 
-	if diff.CurrentDiffLevel() == diff.AllLevel {
+	if diff.CurrentDiffLevel() != diff.RootLevel {
 		for _, attr := range r.Attributes {
 
 			v := attr.NewValue
@@ -307,6 +307,8 @@ func formatPlanInstanceDiff(buf *bytes.Buffer, r *InstanceDiff, keyLen int, colo
 				dispV = "<computed>"
 			case attr.Sensitive:
 				dispV = "<sensitive>"
+			case diff.CurrentDiffLevel() == diff.HideValuesLevel:
+				dispV = "<hidden>"
 			default:
 				dispV = fmt.Sprintf("%q", v)
 			}
@@ -325,6 +327,8 @@ func formatPlanInstanceDiff(buf *bytes.Buffer, r *InstanceDiff, keyLen int, colo
 				switch {
 				case attr.Sensitive:
 					dispU = "<sensitive>"
+				case diff.CurrentDiffLevel() == diff.HideValuesLevel:
+					dispU = "<hidden>"
 				default:
 					dispU = fmt.Sprintf("%q", u)
 				}
