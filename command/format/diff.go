@@ -14,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform/addrs"
 	"github.com/hashicorp/terraform/configs/configschema"
+	"github.com/hashicorp/terraform/helper/diff"
 	"github.com/hashicorp/terraform/plans"
 	"github.com/hashicorp/terraform/plans/objchange"
 	"github.com/hashicorp/terraform/states"
@@ -93,41 +94,44 @@ func ResourceChange(
 
 	buf.WriteString(" {")
 
-	p := blockBodyDiffPrinter{
-		buf:             &buf,
-		color:           color,
-		action:          change.Action,
-		requiredReplace: change.RequiredReplace,
+	if diff.CurrentDiffLevel() != diff.RootLevel {
+		p := blockBodyDiffPrinter{
+			buf:             &buf,
+			color:           color,
+			action:          change.Action,
+			requiredReplace: change.RequiredReplace,
+		}
+
+		// Most commonly-used resources have nested blocks that result in us
+		// going at least three traversals deep while we recurse here, so we'll
+		// start with that much capacity and then grow as needed for deeper
+		// structures.
+		path := make(cty.Path, 0, 3)
+
+		changeV, err := change.Decode(schema.ImpliedType())
+		if err != nil {
+			// Should never happen in here, since we've already been through
+			// loads of layers of encode/decode of the planned changes before now.
+			panic(fmt.Sprintf("failed to decode plan for %s while rendering diff: %s", addr, err))
+		}
+
+		// We currently have an opt-out that permits the legacy SDK to return values
+		// that defy our usual conventions around handling of nesting blocks. To
+		// avoid the rendering code from needing to handle all of these, we'll
+		// normalize first.
+		// (Ideally we'd do this as part of the SDK opt-out implementation in core,
+		// but we've added it here for now to reduce risk of unexpected impacts
+		// on other code in core.)
+		changeV.Change.Before = objchange.NormalizeObjectFromLegacySDK(changeV.Change.Before, schema)
+		changeV.Change.After = objchange.NormalizeObjectFromLegacySDK(changeV.Change.After, schema)
+
+		bodyWritten := p.writeBlockBodyDiff(schema, changeV.Before, changeV.After, 6, path)
+		if bodyWritten {
+			buf.WriteString("\n")
+			buf.WriteString(strings.Repeat(" ", 4))
+		}
 	}
 
-	// Most commonly-used resources have nested blocks that result in us
-	// going at least three traversals deep while we recurse here, so we'll
-	// start with that much capacity and then grow as needed for deeper
-	// structures.
-	path := make(cty.Path, 0, 3)
-
-	changeV, err := change.Decode(schema.ImpliedType())
-	if err != nil {
-		// Should never happen in here, since we've already been through
-		// loads of layers of encode/decode of the planned changes before now.
-		panic(fmt.Sprintf("failed to decode plan for %s while rendering diff: %s", addr, err))
-	}
-
-	// We currently have an opt-out that permits the legacy SDK to return values
-	// that defy our usual conventions around handling of nesting blocks. To
-	// avoid the rendering code from needing to handle all of these, we'll
-	// normalize first.
-	// (Ideally we'd do this as part of the SDK opt-out implementation in core,
-	// but we've added it here for now to reduce risk of unexpected impacts
-	// on other code in core.)
-	changeV.Change.Before = objchange.NormalizeObjectFromLegacySDK(changeV.Change.Before, schema)
-	changeV.Change.After = objchange.NormalizeObjectFromLegacySDK(changeV.Change.After, schema)
-
-	bodyWritten := p.writeBlockBodyDiff(schema, changeV.Before, changeV.After, 6, path)
-	if bodyWritten {
-		buf.WriteString("\n")
-		buf.WriteString(strings.Repeat(" ", 4))
-	}
 	buf.WriteString("}\n")
 
 	return buf.String()
@@ -531,60 +535,65 @@ func (p *blockBodyDiffPrinter) writeValue(val cty.Value, action plans.Action, in
 
 	switch {
 	case ty.IsPrimitiveType():
-		switch ty {
-		case cty.String:
-			{
-				// Special behavior for JSON strings containing array or object
-				src := []byte(val.AsString())
-				ty, err := ctyjson.ImpliedType(src)
-				// check for the special case of "null", which decodes to nil,
-				// and just allow it to be printed out directly
-				if err == nil && !ty.IsPrimitiveType() && strings.TrimSpace(val.AsString()) != "null" {
-					jv, err := ctyjson.Unmarshal(src, ty)
-					if err == nil {
-						p.buf.WriteString("jsonencode(")
-						if jv.LengthInt() == 0 {
-							p.writeValue(jv, action, 0)
-						} else {
-							p.buf.WriteByte('\n')
-							p.buf.WriteString(strings.Repeat(" ", indent+4))
-							p.writeValue(jv, action, indent+4)
-							p.buf.WriteByte('\n')
-							p.buf.WriteString(strings.Repeat(" ", indent))
+		switch diff.CurrentDiffLevel() {
+		case diff.HideValuesLevel:
+			p.buf.WriteString("(hidden)")
+		default:
+			switch ty {
+			case cty.String:
+				{
+					// Special behavior for JSON strings containing array or object
+					src := []byte(val.AsString())
+					ty, err := ctyjson.ImpliedType(src)
+					// check for the special case of "null", which decodes to nil,
+					// and just allow it to be printed out directly
+					if err == nil && !ty.IsPrimitiveType() && strings.TrimSpace(val.AsString()) != "null" {
+						jv, err := ctyjson.Unmarshal(src, ty)
+						if err == nil {
+							p.buf.WriteString("jsonencode(")
+							if jv.LengthInt() == 0 {
+								p.writeValue(jv, action, 0)
+							} else {
+								p.buf.WriteByte('\n')
+								p.buf.WriteString(strings.Repeat(" ", indent+4))
+								p.writeValue(jv, action, indent+4)
+								p.buf.WriteByte('\n')
+								p.buf.WriteString(strings.Repeat(" ", indent))
+							}
+							p.buf.WriteByte(')')
+							break // don't *also* do the normal behavior below
 						}
-						p.buf.WriteByte(')')
-						break // don't *also* do the normal behavior below
 					}
 				}
-			}
 
-			if strings.Contains(val.AsString(), "\n") {
-				// It's a multi-line string, so we want to use the multi-line
-				// rendering so it'll be readable. Rather than re-implement
-				// that here, we'll just re-use the multi-line string diff
-				// printer with no changes, which ends up producing the
-				// result we want here.
-				// The path argument is nil because we don't track path
-				// information into strings and we know that a string can't
-				// have any indices or attributes that might need to be marked
-				// as (requires replacement), which is what that argument is for.
-				p.writeValueDiff(val, val, indent, nil)
-				break
-			}
+				if strings.Contains(val.AsString(), "\n") {
+					// It's a multi-line string, so we want to use the multi-line
+					// rendering so it'll be readable. Rather than re-implement
+					// that here, we'll just re-use the multi-line string diff
+					// printer with no changes, which ends up producing the
+					// result we want here.
+					// The path argument is nil because we don't track path
+					// information into strings and we know that a string can't
+					// have any indices or attributes that might need to be marked
+					// as (requires replacement), which is what that argument is for.
+					p.writeValueDiff(val, val, indent, nil)
+					break
+				}
 
-			fmt.Fprintf(p.buf, "%q", val.AsString())
-		case cty.Bool:
-			if val.True() {
-				p.buf.WriteString("true")
-			} else {
-				p.buf.WriteString("false")
+				fmt.Fprintf(p.buf, "%q", val.AsString())
+			case cty.Bool:
+				if val.True() {
+					p.buf.WriteString("true")
+				} else {
+					p.buf.WriteString("false")
+				}
+			case cty.Number:
+				bf := val.AsBigFloat()
+				p.buf.WriteString(bf.Text('f', -1))
+			default:
+				// should never happen, since the above is exhaustive
+				fmt.Fprintf(p.buf, "%#v", val)
 			}
-		case cty.Number:
-			bf := val.AsBigFloat()
-			p.buf.WriteString(bf.Text('f', -1))
-		default:
-			// should never happen, since the above is exhaustive
-			fmt.Fprintf(p.buf, "%#v", val)
 		}
 	case ty.IsListType() || ty.IsSetType() || ty.IsTupleType():
 		p.buf.WriteString("[")
@@ -622,7 +631,7 @@ func (p *blockBodyDiffPrinter) writeValue(val cty.Value, action plans.Action, in
 			p.buf.WriteString("\n")
 			p.buf.WriteString(strings.Repeat(" ", indent+2))
 			p.writeActionSymbol(action)
-			p.writeValue(key, action, indent+4)
+			p.buf.WriteString(key.AsString())
 			p.buf.WriteString(strings.Repeat(" ", keyLen-len(key.AsString())))
 			p.buf.WriteString(" = ")
 			p.writeValue(val, action, indent+4)
@@ -926,7 +935,7 @@ func (p *blockBodyDiffPrinter) writeValueDiff(old, new cty.Value, indent int, pa
 				path := append(path, cty.IndexStep{Key: kV})
 
 				p.writeActionSymbol(action)
-				p.writeValue(kV, action, indent+4)
+				p.buf.WriteString(k)
 				p.buf.WriteString(strings.Repeat(" ", keyLen-len(k)))
 				p.buf.WriteString(" = ")
 				switch action {
